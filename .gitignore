@@ -216,3 +216,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# ============================================================
+# Project-specific ignores
+# ============================================================
+
+# Local database files
+*.db
+*.sqlite3
+
+# Uploaded invoice files
+# Keep the uploads folder, but don't push actual invoice files
+data/uploads/*
+!data/uploads/.gitkeep
+
+# VS Code local workspace settings
+.vscode/
