@@ -10,6 +10,7 @@ class InvoiceUploadResponse(BaseModel):
 
     status: str
     message: str
+    invoice_id: int
     original_file_name: str
     stored_file_name: str
     source_type: str

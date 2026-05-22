@@ -1,10 +1,14 @@
+import json
 from pathlib import Path
 import shutil
 from uuid import uuid4
 
 import fitz
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from sqlalchemy.orm import Session
 
+from backend.app.db.database import Base, engine, get_db
+from backend.app.models.invoice_model import Invoice
 from backend.app.schemas.invoice_schema import InvoiceUploadResponse
 from backend.app.services.gemini_invoice_extraction_service import (
     extract_invoice_fields_with_gemini,
@@ -31,14 +35,17 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ------------------------------------------------------------
+# Create database tables
+# ------------------------------------------------------------
+Base.metadata.create_all(bind=engine)
+
+
+# ------------------------------------------------------------
 # PDF text extraction helper
 # ------------------------------------------------------------
 def extract_text_from_pdf(file_path: Path) -> str:
     """
     Extract text from a digital PDF using PyMuPDF.
-
-    This works best when the PDF has selectable text.
-    Scanned or handwritten PDFs may need OCR later.
     """
 
     extracted_text = ""
@@ -49,7 +56,43 @@ def extract_text_from_pdf(file_path: Path) -> str:
 
     return extracted_text.strip()
 
+@app.get("/invoices")
+def get_invoices(db: Session = Depends(get_db)):
+    """
+    Get all processed invoices from the database.
 
+    This endpoint helps verify that uploaded invoice results
+    are being stored and can be retrieved later.
+    """
+
+    invoices = db.query(Invoice).order_by(Invoice.id.desc()).all()
+
+    return {
+        "status": "success",
+        "count": len(invoices),
+        "invoices": [invoice_to_dict(invoice) for invoice in invoices],
+    }
+@app.get("/invoices/{invoice_id}")
+def get_invoice_by_id(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Get one processed invoice by invoice ID.
+    """
+
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=404,
+            detail="Invoice not found",
+        )
+
+    return {
+        "status": "success",
+        "invoice": invoice_to_dict(invoice),
+    }
 # ------------------------------------------------------------
 # Root endpoint
 # ------------------------------------------------------------
@@ -78,7 +121,35 @@ def health_check():
         "message": "Enterprise AI Invoice Intelligence Platform backend is running",
     }
 
+def invoice_to_dict(invoice: Invoice) -> dict:
+    """
+    Convert an Invoice database object into a dictionary.
 
+    This helps us return clean JSON responses from database records.
+    """
+
+    return {
+        "id": invoice.id,
+        "original_file_name": invoice.original_file_name,
+        "stored_file_name": invoice.stored_file_name,
+        "source_type": invoice.source_type,
+        "saved_path": invoice.saved_path,
+        "vendor_name": invoice.vendor_name,
+        "invoice_number": invoice.invoice_number,
+        "invoice_date": invoice.invoice_date,
+        "due_date": invoice.due_date,
+        "total_amount": invoice.total_amount,
+        "currency": invoice.currency,
+        "po_number": invoice.po_number,
+        "order_id": invoice.order_id,
+        "payment_terms": invoice.payment_terms,
+        "invoice_status": invoice.invoice_status,
+        "review_reasons": json.loads(invoice.review_reasons)
+        if invoice.review_reasons
+        else [],
+        "parsed_total_amount": invoice.parsed_total_amount,
+        "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+    }
 # ------------------------------------------------------------
 # Invoice upload endpoint
 # ------------------------------------------------------------
@@ -86,6 +157,7 @@ def health_check():
 async def upload_invoice(
     file: UploadFile = File(...),
     source_type: str = Form(...),
+    db: Session = Depends(get_db),
 ):
     """
     Upload invoice endpoint.
@@ -98,6 +170,7 @@ async def upload_invoice(
     - scans for prompt injection
     - sends extracted text to Gemini
     - validates extracted fields
+    - saves processed invoice data into SQLite
     - returns upload confirmation and invoice status
     """
 
@@ -144,10 +217,35 @@ async def upload_invoice(
         security_flags=security_flags,
     )
 
+    # Save processed invoice result into SQLite database.
+    invoice_record = Invoice(
+        original_file_name=original_filename,
+        stored_file_name=unique_filename,
+        source_type=source_type,
+        saved_path=str(file_path),
+        vendor_name=ai_extracted_fields.get("vendor_name", ""),
+        invoice_number=ai_extracted_fields.get("invoice_number", ""),
+        invoice_date=ai_extracted_fields.get("invoice_date", ""),
+        due_date=ai_extracted_fields.get("due_date", ""),
+        total_amount=ai_extracted_fields.get("total_amount", ""),
+        currency=ai_extracted_fields.get("currency", ""),
+        po_number=ai_extracted_fields.get("po_number", ""),
+        order_id=ai_extracted_fields.get("order_id", ""),
+        payment_terms=ai_extracted_fields.get("payment_terms", ""),
+        invoice_status=validation_result["invoice_status"],
+        review_reasons=json.dumps(validation_result["review_reasons"]),
+        parsed_total_amount=validation_result["parsed_total_amount"],
+    )
+
+    db.add(invoice_record)
+    db.commit()
+    db.refresh(invoice_record)
+
     # Return response back to user/Postman/frontend.
     return {
         "status": "success",
         "message": "Invoice uploaded successfully",
+        "invoice_id": invoice_record.id,
         "original_file_name": original_filename,
         "stored_file_name": unique_filename,
         "source_type": source_type,
