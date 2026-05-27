@@ -16,6 +16,12 @@ from backend.app.services.gemini_invoice_extraction_service import (
 from backend.app.services.invoice_validation_service import validate_invoice_fields
 from backend.app.services.security_guardrail_service import detect_prompt_injection
 
+from backend.app.services.duplicate_detection_service import (
+    calculate_file_hash,
+    find_business_duplicate,
+    find_exact_file_duplicate,
+)
+
 
 # ------------------------------------------------------------
 # Create FastAPI application instance
@@ -199,6 +205,12 @@ async def upload_invoice(
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
+    # Calculate file hash for exact duplicate detection.
+    file_hash = calculate_file_hash(file_path)
+
+    # Check if the exact same PDF file was already uploaded before.
+    exact_duplicate = find_exact_file_duplicate(db, file_hash)
+
     # Extract text from the saved PDF.
     extracted_text = extract_text_from_pdf(file_path)
 
@@ -211,10 +223,32 @@ async def upload_invoice(
     # Send extracted text to Gemini for structured invoice field extraction.
     ai_extracted_fields = extract_invoice_fields_with_gemini(extracted_text)
 
-    # Validate extracted fields and apply business rules.
+    # Check for business duplicate using extracted invoice fields.
+    business_duplicate = find_business_duplicate(db, ai_extracted_fields)
+
+    duplicate_flags = []
+    duplicate_type = ""
+    duplicate_invoice_id = None
+
+    if exact_duplicate:
+        duplicate_type = "exact_file_duplicate"
+        duplicate_invoice_id = exact_duplicate.id
+        duplicate_flags.append(
+            f"Exact duplicate file detected with existing invoice ID {exact_duplicate.id}"
+        )
+
+    elif business_duplicate:
+        duplicate_type = "business_duplicate"
+        duplicate_invoice_id = business_duplicate.id
+        duplicate_flags.append(
+            f"Possible duplicate invoice detected with existing invoice ID {business_duplicate.id}"
+        )
+
+    all_security_and_duplicate_flags = security_flags + duplicate_flags
+
     validation_result = validate_invoice_fields(
-        extracted_fields=ai_extracted_fields,
-        security_flags=security_flags,
+    extracted_fields=ai_extracted_fields,
+    security_flags=all_security_and_duplicate_flags,
     )
 
     # Save processed invoice result into SQLite database.
@@ -223,6 +257,7 @@ async def upload_invoice(
         stored_file_name=unique_filename,
         source_type=source_type,
         saved_path=str(file_path),
+        file_hash=file_hash,
         vendor_name=ai_extracted_fields.get("vendor_name", ""),
         invoice_number=ai_extracted_fields.get("invoice_number", ""),
         invoice_date=ai_extracted_fields.get("invoice_date", ""),
@@ -253,7 +288,9 @@ async def upload_invoice(
         "extracted_text_preview": preview_text,
         "extracted_text_length": len(extracted_text),
         "ai_extracted_fields": ai_extracted_fields,
-        "security_flags": security_flags,
+        "security_flags": all_security_and_duplicate_flags,
+        "duplicate_type": duplicate_type,
+        "duplicate_invoice_id": duplicate_invoice_id,
         "invoice_status": validation_result["invoice_status"],
         "review_reasons": validation_result["review_reasons"],
         "parsed_total_amount": validation_result["parsed_total_amount"],
