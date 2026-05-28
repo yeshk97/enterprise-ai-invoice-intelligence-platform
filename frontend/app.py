@@ -21,27 +21,72 @@ st.set_page_config(
 st.title("🧾 Enterprise AI Invoice Intelligence Platform")
 st.caption(
     "Upload invoice PDFs, extract invoice fields using AI, validate business rules, "
-    "and review processed invoices."
+    "detect duplicates, and review processed invoices."
 )
 
 
 # ------------------------------------------------------------
-# Helper function to fetch invoice history
+# Helper function: fetch invoice history
 # ------------------------------------------------------------
-def fetch_invoice_history():
+def fetch_invoice_history() -> list[dict]:
     """
-    Fetch processed invoice history from FastAPI backend.
+    Fetch all processed invoices from FastAPI backend.
     """
 
-    response = requests.get(
-        f"{BACKEND_URL}/invoices",
-        timeout=30,
+    try:
+        response = requests.get(
+            f"{BACKEND_URL}/invoices",
+            timeout=30,
+        )
+
+        if response.status_code == 200:
+            return response.json().get("invoices", [])
+
+        st.error("Failed to fetch invoice history.")
+        st.write(response.text)
+        return []
+
+    except requests.exceptions.RequestException as error:
+        st.error("Could not connect to backend API.")
+        st.write(str(error))
+        return []
+
+
+# ------------------------------------------------------------
+# Helper function: process one invoice
+# ------------------------------------------------------------
+def process_single_invoice(uploaded_file, source_type: str) -> dict:
+    """
+    Send one uploaded invoice PDF to FastAPI backend for processing.
+    """
+
+    files = {
+        "file": (
+            uploaded_file.name,
+            uploaded_file.getvalue(),
+            "application/pdf",
+        )
+    }
+
+    data = {
+        "source_type": source_type,
+    }
+
+    response = requests.post(
+        f"{BACKEND_URL}/invoices/upload",
+        files=files,
+        data=data,
+        timeout=120,
     )
 
     if response.status_code == 200:
-        return response.json().get("invoices", [])
+        return response.json()
 
-    return []
+    return {
+        "status": "failed",
+        "original_file_name": uploaded_file.name,
+        "error": response.text,
+    }
 
 
 # ------------------------------------------------------------
@@ -49,9 +94,10 @@ def fetch_invoice_history():
 # ------------------------------------------------------------
 st.header("Upload Invoice")
 
-uploaded_file = st.file_uploader(
-    "Choose an invoice PDF",
+uploaded_files = st.file_uploader(
+    "Choose invoice PDF files",
     type=["pdf"],
+    accept_multiple_files=True,
 )
 
 source_type = st.selectbox(
@@ -66,83 +112,155 @@ source_type = st.selectbox(
 )
 
 if st.button("Process Invoice", type="primary"):
-    if uploaded_file is None:
-        st.error("Please upload a PDF invoice first.")
+    if not uploaded_files:
+        st.error("Please upload at least one PDF invoice first.")
     else:
-        with st.spinner("Processing invoice with AI..."):
-            files = {
-                "file": (
-                    uploaded_file.name,
-                    uploaded_file.getvalue(),
-                    "application/pdf",
-                )
-            }
+        batch_results = []
 
-            data = {
-                "source_type": source_type
-            }
+        progress_bar = st.progress(0)
+        status_placeholder = st.empty()
 
-            response = requests.post(
-                f"{BACKEND_URL}/invoices/upload",
-                files=files,
-                data=data,
-                timeout=120,
+        total_files = len(uploaded_files)
+
+        for index, uploaded_file in enumerate(uploaded_files, start=1):
+            status_placeholder.info(
+                f"Processing {index} of {total_files}: {uploaded_file.name}"
             )
 
-        if response.status_code == 200:
-            result = response.json()
-
-            st.success("Invoice processed successfully!")
-
-            status = result.get("invoice_status", "Unknown")
-            parsed_amount = result.get("parsed_total_amount", "")
-            invoice_id = result.get("invoice_id", "")
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                st.metric("Invoice ID", invoice_id)
-
-            with col2:
-                st.metric("Status", status)
-
-            with col3:
-                st.metric("Parsed Amount", parsed_amount)
-
-            st.subheader("Review Reasons")
-            review_reasons = result.get("review_reasons", [])
-
-            if review_reasons:
-                for reason in review_reasons:
-                    st.warning(reason)
-            else:
-                st.success("No review reasons found.")
-
-            st.subheader("AI Extracted Fields")
-            st.json(result.get("ai_extracted_fields", {}))
-
-            with st.expander("Extracted Text Preview"):
-                st.text_area(
-                    "PDF Text Preview",
-                    result.get("extracted_text_preview", ""),
-                    height=250,
+            try:
+                result = process_single_invoice(
+                    uploaded_file=uploaded_file,
+                    source_type=source_type,
                 )
+                batch_results.append(result)
 
-            with st.expander("Saved Invoice Metadata"):
-                st.json(
+            except requests.exceptions.RequestException as error:
+                batch_results.append(
                     {
-                        "invoice_id": result.get("invoice_id"),
-                        "original_file_name": result.get("original_file_name"),
-                        "stored_file_name": result.get("stored_file_name"),
-                        "source_type": result.get("source_type"),
-                        "saved_path": result.get("saved_path"),
-                        "parsed_total_amount": result.get("parsed_total_amount"),
+                        "status": "failed",
+                        "original_file_name": uploaded_file.name,
+                        "error": str(error),
                     }
                 )
 
-        else:
-            st.error("Invoice processing failed.")
-            st.write(response.text)
+            progress_bar.progress(index / total_files)
+
+        status_placeholder.success("Batch processing completed!")
+
+        successful_results = [
+            result for result in batch_results if result.get("status") == "success"
+        ]
+        failed_results = [
+            result for result in batch_results if result.get("status") == "failed"
+        ]
+
+        st.success(
+            f"Processed {len(successful_results)} invoice(s). "
+            f"Failed: {len(failed_results)}."
+        )
+
+        # ------------------------------------------------------------
+        # Batch summary table
+        # ------------------------------------------------------------
+        st.subheader("Batch Processing Summary")
+
+        summary_rows = []
+
+        for result in batch_results:
+            extracted_fields = result.get("ai_extracted_fields", {})
+
+            summary_rows.append(
+                {
+                    "File Name": result.get("original_file_name"),
+                    "Invoice ID": result.get("invoice_id"),
+                    "Vendor": extracted_fields.get("vendor_name", ""),
+                    "Invoice #": extracted_fields.get("invoice_number", ""),
+                    "Amount": extracted_fields.get("total_amount", ""),
+                    "Status": result.get("invoice_status", result.get("status")),
+                    "Duplicate Type": result.get("duplicate_type", ""),
+                    "Duplicate Invoice ID": result.get("duplicate_invoice_id", ""),
+                    "Error": result.get("error", ""),
+                }
+            )
+
+        st.dataframe(
+            summary_rows,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ------------------------------------------------------------
+        # Detailed result display
+        # ------------------------------------------------------------
+        st.subheader("Detailed Results")
+
+        for result in batch_results:
+            file_name = result.get("original_file_name", "Unknown file")
+
+            with st.expander(f"Result: {file_name}", expanded=False):
+                if result.get("status") == "failed":
+                    st.error("Processing failed.")
+                    st.write(result.get("error", "Unknown error"))
+                    continue
+
+                invoice_id = result.get("invoice_id")
+                invoice_status = result.get("invoice_status", "Unknown")
+                parsed_amount = result.get("parsed_total_amount", "")
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.metric("Invoice ID", invoice_id)
+
+                with col2:
+                    st.metric("Status", invoice_status)
+
+                with col3:
+                    st.metric("Parsed Amount", parsed_amount)
+
+                duplicate_type = result.get("duplicate_type")
+                duplicate_invoice_id = result.get("duplicate_invoice_id")
+
+                if duplicate_type:
+                    st.warning(
+                        f"Duplicate detected: {duplicate_type}. "
+                        f"Existing invoice ID: {duplicate_invoice_id}"
+                    )
+
+                st.markdown("#### Review Reasons")
+
+                review_reasons = result.get("review_reasons", [])
+
+                if review_reasons:
+                    for reason in review_reasons:
+                        st.warning(reason)
+                else:
+                    st.success("No review reasons found.")
+
+                st.markdown("#### AI Extracted Fields")
+                st.json(result.get("ai_extracted_fields", {}))
+
+                with st.expander("Extracted Text Preview"):
+                    st.text_area(
+                        "PDF Text Preview",
+                        result.get("extracted_text_preview", ""),
+                        height=250,
+                        key=f"text_preview_{invoice_id}_{file_name}",
+                    )
+
+                with st.expander("Saved Invoice Metadata"):
+                    st.json(
+                        {
+                            "invoice_id": result.get("invoice_id"),
+                            "original_file_name": result.get("original_file_name"),
+                            "stored_file_name": result.get("stored_file_name"),
+                            "source_type": result.get("source_type"),
+                            "saved_path": result.get("saved_path"),
+                            "duplicate_type": result.get("duplicate_type"),
+                            "duplicate_invoice_id": result.get("duplicate_invoice_id"),
+                            "parsed_total_amount": result.get("parsed_total_amount"),
+                        }
+                    )
 
 
 # ------------------------------------------------------------
@@ -158,7 +276,9 @@ needs_review_count = sum(
     1 for invoice in invoices if invoice.get("invoice_status") == "Needs Review"
 )
 manager_approval_count = sum(
-    1 for invoice in invoices if invoice.get("invoice_status") == "Pending Manager Approval"
+    1
+    for invoice in invoices
+    if invoice.get("invoice_status") == "Pending Manager Approval"
 )
 
 metric_col1, metric_col2, metric_col3 = st.columns(3)
