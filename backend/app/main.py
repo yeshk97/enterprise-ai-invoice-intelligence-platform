@@ -3,13 +3,19 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
+from datetime import datetime
+
 import fitz
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from backend.app.db.database import Base, engine, get_db
 from backend.app.models.invoice_model import Invoice
-from backend.app.schemas.invoice_schema import InvoiceUploadResponse
+from backend.app.schemas.invoice_schema import (
+    InvoiceActionRequest,
+    InvoiceReviewUpdateRequest,
+    InvoiceUploadResponse,
+)
 from backend.app.services.gemini_invoice_extraction_service import (
     extract_invoice_fields_with_gemini,
 )
@@ -99,6 +105,121 @@ def get_invoice_by_id(
         "status": "success",
         "invoice": invoice_to_dict(invoice),
     }
+
+@app.patch("/invoices/{invoice_id}/review")
+def review_invoice(
+    invoice_id: int,
+    review_data: InvoiceReviewUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Update invoice fields after human review.
+
+    This is used when a finance analyst corrects missing or wrong fields.
+    """
+
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=404,
+            detail="Invoice not found",
+        )
+
+    update_data = review_data.model_dump(exclude_unset=True)
+
+    for field_name, field_value in update_data.items():
+        setattr(invoice, field_name, field_value)
+
+    invoice.reviewed_at = datetime.utcnow()
+
+    # Basic status recalculation after human review.
+    if invoice.total_amount and invoice.parsed_total_amount:
+        try:
+            amount_value = float(str(invoice.parsed_total_amount).replace(",", ""))
+            if amount_value > 10000:
+                invoice.invoice_status = "Pending Manager Approval"
+            else:
+                invoice.invoice_status = "Ready for Approval"
+        except ValueError:
+            invoice.invoice_status = "Needs Review"
+    else:
+        invoice.invoice_status = "Needs Review"
+
+    invoice.review_reasons = "[]"
+
+    db.commit()
+    db.refresh(invoice)
+
+    return {
+        "status": "success",
+        "message": "Invoice reviewed and updated successfully",
+        "invoice": invoice_to_dict(invoice),
+    }
+
+@app.patch("/invoices/{invoice_id}/approve")
+def approve_invoice(
+    invoice_id: int,
+    action_data: InvoiceActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Approve an invoice after review or manager approval.
+    """
+
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=404,
+            detail="Invoice not found",
+        )
+
+    invoice.invoice_status = "Approved"
+    invoice.approval_comments = action_data.comments
+    invoice.approved_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(invoice)
+
+    return {
+        "status": "success",
+        "message": "Invoice approved successfully",
+        "invoice": invoice_to_dict(invoice),
+    }
+
+@app.patch("/invoices/{invoice_id}/reject")
+def reject_invoice(
+    invoice_id: int,
+    action_data: InvoiceActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Reject an invoice with optional comments.
+    """
+
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=404,
+            detail="Invoice not found",
+        )
+
+    invoice.invoice_status = "Rejected"
+    invoice.approval_comments = action_data.comments
+    invoice.rejected_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(invoice)
+
+    return {
+        "status": "success",
+        "message": "Invoice rejected successfully",
+        "invoice": invoice_to_dict(invoice),
+    }
+
+
 # ------------------------------------------------------------
 # Root endpoint
 # ------------------------------------------------------------
@@ -154,6 +275,10 @@ def invoice_to_dict(invoice: Invoice) -> dict:
         if invoice.review_reasons
         else [],
         "parsed_total_amount": invoice.parsed_total_amount,
+                "approval_comments": invoice.approval_comments,
+        "reviewed_at": invoice.reviewed_at.isoformat() if invoice.reviewed_at else None,
+        "approved_at": invoice.approved_at.isoformat() if invoice.approved_at else None,
+        "rejected_at": invoice.rejected_at.isoformat() if invoice.rejected_at else None,
         "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
     }
 # ------------------------------------------------------------

@@ -41,5 +41,11 @@ class Invoice(Base):
     review_reasons = Column(Text, nullable=True)
     parsed_total_amount = Column(String, nullable=True)
 
+    # Human review / approval fields
+    approval_comments = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+
     # Audit timestamp
     created_at = Column(DateTime, default=datetime.utcnow)
