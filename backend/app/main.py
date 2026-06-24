@@ -7,15 +7,20 @@ from datetime import datetime
 
 import fitz
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from backend.app.db.database import Base, engine, get_db
 from backend.app.models.invoice_model import Invoice
 from backend.app.schemas.invoice_schema import (
+    AskSQLRequest,
     InvoiceActionRequest,
     InvoiceReviewUpdateRequest,
     InvoiceUploadResponse,
 )
+from backend.app.services.sql_guardrail_service import validate_read_only_sql
+from backend.app.services.text_to_sql_service import generate_sql_from_question
 from backend.app.services.gemini_invoice_extraction_service import (
     extract_invoice_fields_with_gemini,
 )
@@ -104,6 +109,55 @@ def get_invoice_by_id(
     return {
         "status": "success",
         "invoice": invoice_to_dict(invoice),
+    }
+
+@app.post("/ask-sql")
+def ask_sql(
+    request: AskSQLRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    AskSQL endpoint.
+
+    Converts a natural language question into a safe read-only SQL query,
+    validates the generated SQL, executes it, and returns database rows.
+
+    Security rule:
+    - Only SELECT queries are allowed.
+    - No INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, or PRAGMA.
+    """
+
+    # Step 1: Ask Gemini to generate SQL from the user's question.
+    generated_sql = generate_sql_from_question(request.question)
+
+    # Step 2: Validate that SQL is safe and read-only.
+    is_safe, safe_sql_or_reason = validate_read_only_sql(generated_sql)
+
+    if not is_safe:
+        return {
+            "status": "blocked",
+            "question": request.question,
+            "generated_sql": generated_sql,
+            "reason": safe_sql_or_reason,
+            "rows": [],
+        }
+
+    safe_sql = safe_sql_or_reason
+
+    # Step 3: Execute only the validated SQL.
+    result = db.execute(text(safe_sql))
+
+    rows = [
+        dict(row._mapping)
+        for row in result.fetchall()
+    ]
+
+    return {
+        "status": "success",
+        "question": request.question,
+        "generated_sql": safe_sql,
+        "row_count": len(rows),
+        "rows": rows,
     }
 
 @app.patch("/invoices/{invoice_id}/review")

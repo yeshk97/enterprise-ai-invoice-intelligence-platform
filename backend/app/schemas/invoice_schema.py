@@ -48,3 +48,10 @@ class InvoiceActionRequest(BaseModel):
     """
 
     comments: str | None = None
+
+class AskSQLRequest(BaseModel):
+    """
+    Request schema for AskSQL natural language questions.
+    """
+
+    question: str
