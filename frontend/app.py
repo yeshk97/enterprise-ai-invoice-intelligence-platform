@@ -321,3 +321,66 @@ if invoices:
     )
 else:
     st.info("No invoices found yet.")
+
+st.divider()
+
+st.subheader("Ask Your Invoice Database")
+
+st.write(
+    "Ask questions about processed invoices using natural language. "
+    "The system converts your question into safe read-only SQL before querying the database."
+)
+
+ask_sql_question = st.text_input(
+    "Enter your invoice question",
+    placeholder="Example: Show invoices that need review"
+)
+
+if st.button("Ask Invoice Database"):
+    if not ask_sql_question.strip():
+        st.warning("Please enter a question first.")
+    else:
+        try:
+            response = requests.post(
+                f"{BACKEND_URL}/ask-sql",
+                json={"question": ask_sql_question},
+                timeout=60,
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                status = result.get("status")
+
+                if status == "success":
+                    st.success("Question answered successfully.")
+
+                    st.caption("Generated SQL")
+                    st.code(result.get("generated_sql", ""), language="sql")
+
+                    st.write(f"Rows returned: {result.get('row_count', 0)}")
+
+                    rows = result.get("rows", [])
+
+                    if rows:
+                        st.dataframe(rows, use_container_width=True)
+                    else:
+                        st.info("No matching invoice records found.")
+
+                elif status == "blocked":
+                    st.error("This question was blocked by SQL safety guardrails.")
+
+                    st.caption("Generated SQL")
+                    st.code(result.get("generated_sql", ""), language="sql")
+
+                    st.warning(result.get("reason", "Unsafe SQL detected."))
+
+                else:
+                    st.error("AskSQL returned an unexpected response.")
+                    st.json(result)
+
+            else:
+                st.error(f"Backend error: {response.status_code}")
+                st.text(response.text)
+
+        except requests.exceptions.RequestException as error:
+            st.error(f"Could not connect to backend: {error}")
