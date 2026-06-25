@@ -30,4 +30,4 @@ Only Safe SELECT Queries Execute
     ↓
 SQLite Database Returns Rows
     ↓
-Streamlit Displays SQL + Results
+Streamlit Displays SQL + Results    
