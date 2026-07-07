@@ -24,6 +24,7 @@ class Invoice(Base):
     source_type = Column(String, nullable=False)
     saved_path = Column(String, nullable=False)
     file_hash = Column(String, nullable=True, index=True)
+    
 
     # Extracted invoice fields
     vendor_name = Column(String, nullable=True)

@@ -315,6 +315,8 @@ def invoice_to_dict(invoice: Invoice) -> dict:
         "stored_file_name": invoice.stored_file_name,
         "source_type": invoice.source_type,
         "saved_path": invoice.saved_path,
+        "extracted_text_length": len(invoice.extracted_text) if invoice.extracted_text else 0,
+        "extracted_text_preview": invoice.extracted_text[:500] if invoice.extracted_text else "",
         "vendor_name": invoice.vendor_name,
         "invoice_number": invoice.invoice_number,
         "invoice_date": invoice.invoice_date,
@@ -449,6 +451,7 @@ async def upload_invoice(
         invoice_status=validation_result["invoice_status"],
         review_reasons=json.dumps(validation_result["review_reasons"]),
         parsed_total_amount=validation_result["parsed_total_amount"],
+        extracted_text=extracted_text,
     )
 
     db.add(invoice_record)
