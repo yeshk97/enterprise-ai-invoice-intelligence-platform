@@ -11,6 +11,8 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+from backend.app.models.invoice_chunk_model import InvoiceChunk
+
 from backend.app.db.database import Base, engine, get_db
 from backend.app.models.invoice_model import Invoice
 from backend.app.schemas.invoice_schema import (
