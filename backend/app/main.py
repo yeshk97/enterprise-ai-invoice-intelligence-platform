@@ -34,7 +34,7 @@ from backend.app.services.duplicate_detection_service import (
     find_business_duplicate,
     find_exact_file_duplicate,
 )
-
+from backend.app.services.rag_indexing_service import index_invoice_text
 
 # ------------------------------------------------------------
 # Create FastAPI application instance
@@ -112,6 +112,22 @@ def get_invoice_by_id(
         "status": "success",
         "invoice": invoice_to_dict(invoice),
     }
+
+@app.post("/invoices/{invoice_id}/index")
+def index_invoice_for_rag(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Create RAG chunks for a specific invoice.
+
+    This reads the saved extracted_text from the invoices table,
+    splits it into chunks, and stores those chunks in invoice_chunks.
+    """
+
+    result = index_invoice_text(db=db, invoice_id=invoice_id)
+
+    return result
 
 @app.post("/ask-sql")
 def ask_sql(
