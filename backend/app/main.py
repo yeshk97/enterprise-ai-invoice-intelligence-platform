@@ -18,6 +18,7 @@ from backend.app.models.invoice_model import Invoice
 from backend.app.schemas.invoice_schema import (
     AskSQLRequest,
     InvoiceActionRequest,
+    InvoiceQuestionRequest,
     InvoiceReviewUpdateRequest,
     InvoiceUploadResponse,
 )
@@ -35,6 +36,8 @@ from backend.app.services.duplicate_detection_service import (
     find_exact_file_duplicate,
 )
 from backend.app.services.rag_indexing_service import index_invoice_text
+
+from backend.app.services.invoice_rag_qa_service import answer_invoice_question
 
 # ------------------------------------------------------------
 # Create FastAPI application instance
@@ -126,6 +129,26 @@ def index_invoice_for_rag(
     """
 
     result = index_invoice_text(db=db, invoice_id=invoice_id)
+
+    return result
+
+@app.post("/invoices/{invoice_id}/ask")
+def ask_invoice_question(
+    invoice_id: int,
+    request: InvoiceQuestionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Ask a question about one invoice using stored invoice chunks.
+
+    This is a simple invoice-level RAG Q&A endpoint.
+    """
+
+    result = answer_invoice_question(
+        db=db,
+        invoice_id=invoice_id,
+        question=request.question,
+    )
 
     return result
 

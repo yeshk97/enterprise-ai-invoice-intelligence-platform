@@ -55,3 +55,10 @@ class AskSQLRequest(BaseModel):
     """
 
     question: str
+
+class InvoiceQuestionRequest(BaseModel):
+    """
+    Request schema for asking a question about one invoice.
+    """
+
+    question: str
